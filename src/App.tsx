@@ -244,6 +244,18 @@ function FareEaseApp() {
   const [searchQuery, setSearchQuery] = useState("");
   const [trustResult, setTrustResult] = useState<RiderReputation | null>(null);
   const [activeWaybill, setActiveWaybill] = useState<Waybill | null>(null);
+
+  // Create Waybill Form State
+  const [createForm, setCreateForm] = useState({
+    itemValue: '',
+    riderFee: '',
+    customerName: '',
+    riderBankCode: '',
+    riderAccountNumber: '',
+  });
+  const [nameEnquiryResult, setNameEnquiryResult] = useState<{ accountName: string; reputation: any } | null>(null);
+  const [isNameLoading, setIsNameLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   
   // Real Data State
   const [waybills, setWaybills] = useState<Waybill[]>([]);
@@ -373,54 +385,90 @@ function FareEaseApp() {
     }
   };
 
+  // Name Enquiry — called when rider account number reaches 10 digits
+  const handleNameEnquiry = async (accountId: string, bankCode: string) => {
+    if (accountId.length !== 10 || !bankCode) return;
+    setIsNameLoading(true);
+    setNameEnquiryResult(null);
+    try {
+      const res = await fetch('/api/interswitch/name-enquiry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId, bankCode }),
+      });
+      if (!res.ok) throw new Error('Name enquiry failed');
+      const data = await res.json();
+      setNameEnquiryResult(data);
+    } catch (err) {
+      console.error('Name enquiry failed:', err);
+      setNameEnquiryResult(null);
+    } finally {
+      setIsNameLoading(false);
+    }
+  };
+
   const handleCreateWaybill = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    setIsCreating(true);
 
     try {
-      // 1. Generate Virtual Account from Backend
+      const itemValue = Number(createForm.itemValue);
+      const riderFee = Number(createForm.riderFee);
+
+      if (!itemValue || !riderFee) {
+        alert('Please enter item value and rider fee');
+        setIsCreating(false);
+        return;
+      }
+
+      // Call backend — it creates waybill + generates VA
       const vaResponse = await fetch('/api/waybills/generate-va', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendorId: user.id })
+        body: JSON.stringify({
+          vendorId: user.id,
+          itemValue,
+          riderFee,
+          appFee: 100,
+          customerName: createForm.customerName || 'Customer',
+          riderName: nameEnquiryResult?.accountName || 'Rider',
+          riderAccount: createForm.riderAccountNumber,
+          riderBankCode: createForm.riderBankCode,
+        }),
       });
-      
-      if (!vaResponse.ok) throw new Error("Failed to generate virtual account");
-      const { virtualAccount, bankName } = await vaResponse.json();
 
-      const waybillData = {
-        vendor_id: user.id,
-        customer_name: "New Customer",
-        item_value: 25000,
-        rider_fee: 2500,
-        app_fee: 100,
-        rider_name: "Verified Rider",
-        rider_account: "0123456789",
-        status: 'PENDING',
-        virtual_account_number: virtualAccount,
-        bank_name: bankName,
-        created_at: new Date().toISOString()
+      if (!vaResponse.ok) {
+        const err = await vaResponse.json();
+        throw new Error(err.detail || 'Failed to generate virtual account');
+      }
+
+      const result = await vaResponse.json();
+
+      const newWb = {
+        id: result.waybillId,
+        customerName: createForm.customerName || 'Customer',
+        itemValue,
+        riderFee,
+        riderName: nameEnquiryResult?.accountName || 'Rider',
+        riderAccount: createForm.riderAccountNumber,
+        status: 'PENDING' as const,
+        timestamp: new Date().toISOString(),
+        virtualAccount: result.virtualAccount,
+        bankName: result.bankName,
       };
 
-      const { data, error } = await supabase
-        .from('waybills')
-        .insert([waybillData])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      const newWb = { 
-        id: data.id, 
-        ...waybillData, 
-        virtualAccount: virtualAccount,
-        timestamp: data.created_at 
-      } as any;
-      
       setActiveWaybill(newWb);
       setCurrentScreen('share');
-    } catch (error) {
-      console.error("Create waybill failed:", error);
+
+      // Reset form
+      setCreateForm({ itemValue: '', riderFee: '', customerName: '', riderBankCode: '', riderAccountNumber: '' });
+      setNameEnquiryResult(null);
+    } catch (error: any) {
+      console.error('Create waybill failed:', error);
+      alert(error.message || 'Failed to create waybill');
+    } finally {
+      setIsCreating(false);
     }
   };
 
@@ -732,7 +780,10 @@ function FareEaseApp() {
                         <input 
                           type="number" 
                           placeholder="25,000"
+                          value={createForm.itemValue}
+                          onChange={(e) => setCreateForm({ ...createForm, itemValue: e.target.value })}
                           className="w-full p-4 border-2 border-black font-bold focus:bg-[#00FF00] focus:outline-none transition-colors"
+                          required
                         />
                       </div>
                       <div className="space-y-2">
@@ -740,7 +791,10 @@ function FareEaseApp() {
                         <input 
                           type="number" 
                           placeholder="2,500"
+                          value={createForm.riderFee}
+                          onChange={(e) => setCreateForm({ ...createForm, riderFee: e.target.value })}
                           className="w-full p-4 border-2 border-black font-bold focus:bg-[#00FF00] focus:outline-none transition-colors"
+                          required
                         />
                       </div>
                     </div>
@@ -750,6 +804,8 @@ function FareEaseApp() {
                       <input 
                         type="text" 
                         placeholder="e.g. Adebayo T."
+                        value={createForm.customerName}
+                        onChange={(e) => setCreateForm({ ...createForm, customerName: e.target.value })}
                         className="w-full p-4 border-2 border-black font-bold focus:bg-[#00FF00] focus:outline-none transition-colors"
                       />
                     </div>
@@ -762,11 +818,29 @@ function FareEaseApp() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <label className="text-[10px] font-black uppercase text-gray-500">Bank Name</label>
-                          <select className="w-full p-2 border-2 border-black font-bold text-sm bg-white">
-                            <option>OPay</option>
-                            <option>PalmPay</option>
-                            <option>Moniepoint</option>
-                            <option>Kuda Bank</option>
+                          <select 
+                            className="w-full p-2 border-2 border-black font-bold text-sm bg-white"
+                            value={createForm.riderBankCode}
+                            onChange={(e) => {
+                              const bankCode = e.target.value;
+                              setCreateForm({ ...createForm, riderBankCode: bankCode });
+                              if (createForm.riderAccountNumber.length === 10 && bankCode) {
+                                handleNameEnquiry(createForm.riderAccountNumber, bankCode);
+                              }
+                            }}
+                            required
+                          >
+                            <option value="">Select Bank</option>
+                            <option value="999992">OPay</option>
+                            <option value="999991">PalmPay</option>
+                            <option value="50515">Moniepoint</option>
+                            <option value="50211">Kuda Bank</option>
+                            <option value="044">Access Bank</option>
+                            <option value="058">GTBank</option>
+                            <option value="057">Zenith Bank</option>
+                            <option value="011">First Bank</option>
+                            <option value="033">UBA</option>
+                            <option value="035">Wema Bank</option>
                           </select>
                         </div>
                         <div className="space-y-2">
@@ -774,16 +848,59 @@ function FareEaseApp() {
                           <input 
                             type="text" 
                             placeholder="0123456789"
+                            maxLength={10}
+                            value={createForm.riderAccountNumber}
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, '');
+                              setCreateForm({ ...createForm, riderAccountNumber: val });
+                              if (val.length === 10 && createForm.riderBankCode) {
+                                handleNameEnquiry(val, createForm.riderBankCode);
+                              }
+                            }}
                             className="w-full p-2 border-2 border-black font-bold text-sm"
+                            required
                           />
                         </div>
                       </div>
+
+                      {/* Name Enquiry Result */}
+                      {isNameLoading && (
+                        <div className="mt-3 p-3 border-2 border-black bg-yellow-100 animate-pulse">
+                          <p className="text-xs font-black uppercase">Verifying account...</p>
+                        </div>
+                      )}
+                      {nameEnquiryResult && !isNameLoading && (
+                        <div className={`mt-3 p-3 border-2 border-black ${
+                          nameEnquiryResult.reputation?.trustLevel === 'high' ? 'bg-[#00FF00]' :
+                          nameEnquiryResult.reputation?.trustLevel === 'low' ? 'bg-yellow-200' : 'bg-red-100'
+                        }`}>
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-black uppercase text-sm">{nameEnquiryResult.accountName}</p>
+                              <p className="text-[10px] font-bold uppercase text-black/60">
+                                {nameEnquiryResult.reputation?.successfulDrops || 0} Drops • {nameEnquiryResult.reputation?.uniqueVendors || 0} Vendors
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {nameEnquiryResult.reputation?.trustLevel === 'high' ? (
+                                <><ShieldCheck size={16} /><span className="text-[10px] font-black uppercase">Trusted</span></>
+                              ) : nameEnquiryResult.reputation?.trustLevel === 'none' ? (
+                                <><ShieldAlert size={16} /><span className="text-[10px] font-black uppercase">No History</span></>
+                              ) : (
+                                <><Clock size={16} /><span className="text-[10px] font-black uppercase">Low History</span></>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="bg-black text-white p-6 border-2 border-black">
                       <div className="flex justify-between items-center mb-2">
                         <span className="text-xs font-bold uppercase text-gray-400">Total Customer Pay</span>
-                        <span className="text-2xl font-black">₦27,600</span>
+                        <span className="text-2xl font-black">
+                          ₦{((Number(createForm.itemValue) || 0) + (Number(createForm.riderFee) || 0) + 100).toLocaleString()}
+                        </span>
                       </div>
                       <div className="flex justify-between items-center text-xs font-bold uppercase text-[#00FF00]">
                         <span>FareEase Fee</span>
@@ -792,7 +909,7 @@ function FareEaseApp() {
                     </div>
 
                     <BrutalistButton className="w-full py-4 text-xl">
-                      Generate Vault Account
+                      {isCreating ? 'Generating...' : 'Generate Vault Account'}
                     </BrutalistButton>
                   </form>
                 </BrutalistCard>

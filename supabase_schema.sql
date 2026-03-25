@@ -24,9 +24,24 @@ CREATE TABLE waybills (
   app_fee NUMERIC DEFAULT 100,
   rider_name TEXT,
   rider_account TEXT,
+  rider_bank_code TEXT,
   status TEXT DEFAULT 'PENDING',
   virtual_account_number TEXT UNIQUE,
   bank_name TEXT,
+  interswitch_ref TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. Transactions Ledger (Auto-Split Tracking)
+CREATE TABLE transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  waybill_id UUID REFERENCES waybills(id),
+  type TEXT NOT NULL, -- 'VENDOR_PAYOUT', 'RIDER_PAYOUT', 'APP_FEE'
+  amount NUMERIC NOT NULL,
+  recipient_account TEXT,
+  recipient_bank_code TEXT,
+  interswitch_ref TEXT,
+  status TEXT DEFAULT 'PENDING', -- 'PENDING', 'SUCCESS', 'FAILED'
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -66,6 +81,17 @@ CREATE POLICY "Vendors can insert own waybills" ON waybills
 -- Rider Reputation: All authenticated vendors can read
 CREATE POLICY "Authenticated users can view rider reputation" ON rider_reputation
   FOR SELECT USING (auth.role() = 'authenticated');
+
+-- Transactions: Vendors can read transactions for their own waybills
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Vendors can view own transactions" ON transactions
+  FOR SELECT USING (
+    waybill_id IN (SELECT id FROM waybills WHERE vendor_id = auth.uid())
+  );
+
+-- Service role can insert transactions (from webhook handler)
+-- No INSERT policy for authenticated users — only server-side inserts via service role key
 
 -- Realtime: Enable for waybills
 ALTER PUBLICATION supabase_realtime ADD TABLE waybills;
